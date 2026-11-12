@@ -302,3 +302,11 @@ These lines are baked into this repo's own pastes. They come from pre-run 8's le
 ## Locked during pre-run 9
 
 When a fix works, append it here, one block per fix, in the form shown above: UTC time, what failed or worked, what was changed, why that change stays.
+
+```
+- 2026-11-12T01:38:38Z.
+- What worked: (vi) five cohorts, one build: FEE_SPLIT verified on the submit rows (floor 100, double 200, triple 300 and high 1000 on the desk node; triple-pub 300 on the kept public kaspads), and every cohort read apart on the chain. (vii) the reshaped offers: HOLD-1, HOLD-2, HOLD-3 and RETURN met on their first three minutes on submit-OK, no repair; the rate fell to 1,013 at 01:24:12Z as HOLD-3 was scored, so the over-capacity stretch was about 3 minutes 48 seconds, the backlog drained by 01:26Z, and other TN10 traffic held at about 2,800-3,400 a minute throughout. (viii) the candidate check passed at the open. (iv) the desk counter kept pace in every whole minute (DAA gap at most 4, sink age at most about 1.2 s). (ix) Mini's id dedupe brought its non-coinbase within about 0.5 percent of the desk's. The bot filed a legal NO SEND no-free-node. No FAILED file; the runner was not restarted.
+- What failed: nothing in the runner. Finding: Mini's hop columns are exactly twice the desk's, because classify() writes one row per covenant output and each hop has two. Finding: HOLD-2 at 1,800 tx/s was included as sent but already slowed the chained low-fee tiers (floor 13 percent, double 25 percent, triple 38 percent of the HOLD-1 hop rate; high 92 percent).
+- What was changed: nothing in this run.
+- Why that change stays: (vi) gave the first same-fee, two-path reading (triple-pub landed about a third more hops than triple at the same 300), so a next repo keeps one same-fee pair on two paths or puts every cohort on one path. (vii) a short over-capacity stretch gave a clean over-capacity reading without crowding out other users, so a next repo keeps the drop after HOLD-3. Mini's hop count is fixed offline to one hop per transaction before a next repo uses it.
+```

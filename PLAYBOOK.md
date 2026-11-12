@@ -53,6 +53,16 @@ Rehearsal A, 2026-11-12 00:40:55Z to 01:04:24Z (desk, Brussels 01:40 to 02:04). 
 - The five cohort columns rendered in every step file, with submit-to-landing per cohort. The stand-in lands hops by its own rule, so its cohort numbers are not a network result.
 - What the rehearsal did not exercise: the stand-in's chain-block replacement was not seen by the counter (no `REORG` line), as in pre-run 8's rehearsal. The removal path is unchanged from pre-run 8's counter. Mini's dedupe was checked by its own offline test, not in this rehearsal.
 
+## Status after the live run
+
+Read on 2026-11-12 between 01:38Z and 01:50Z. Not a gate.
+
+- Desk: the runner (started 01:11:17Z) ran HOLD-1 to RETURN without a repair or a restart and ended at 01:38:38Z after publishing `counts/chain/TIMELINE.md` and `logs/METHOD.md`. Its counter, family sender, coordinator, broker and six payment senders exited with it. The private TN10 kaspad was not stopped and is still up, synced. No devnet, `KaspaPublicNode` or miner was started.
+- Mini: the runner (MINI-ARMED 01:10:28Z) published a second read for every step and ran its 15-minute tail after RETURN. Its TN10 kaspad was not wiped.
+- Bot: the waiter read HOLD-3 on origin, pinned 01:28Z, found no free node at 01:27:30Z, and published `NO SEND no-free-node` (59527e5). The waiter and its finish step exited. Nothing was sent by the bot.
+- Lane and pile after the run: lane 5,541 coins, 245,475 usable tKAS, above the abort line; payment key 8,400 coins (191,994.94 tKAS). Keys 1–15 have no genesis coin left; a next repo funds them again.
+- No `FAILED` file was written. Results: [logs/LESSONS.md](logs/LESSONS.md), [logs/METHOD.md](logs/METHOD.md), and the pre-run 9 block in [locks/LOCKED.md](locks/LOCKED.md).
+
 ## When something breaks
 
 Append a worked fix to [locks/LOCKED.md](locks/LOCKED.md) in the form that page shows, and a repair line to `logs/FIXES.md`. If the run dies before RETURN, write `logs/FAILED.md`, stop every runner, waiter, and counter, and do not resume. The next attempt is a new repo that starts from this repo's lock file.
