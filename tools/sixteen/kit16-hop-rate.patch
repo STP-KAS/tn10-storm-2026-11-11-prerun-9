@@ -1,0 +1,64 @@
+--- a/kit15/covenant.mjs
++++ b/kit16/covenant.mjs
+@@ -7,6 +7,7 @@
+ import net from "node:net";
+ import { createRequire } from "node:module";
+ import { CFG, kaspa, NET, to, sleep } from "./lib.mjs";
++import { familyRate, hopLine } from "./family-fees.mjs";
+ const require = createRequire(import.meta.url);
+ 
+ export function startBuilder(errFile) {
+@@ -90,10 +91,14 @@
+ }
+ 
+ // Build one hop. Returns { tx, txid } or throws. Checks the wasm id equals the builder id.
+-export async function buildHop(B, st, coin, key, nonce) {
+-  const r = await B.run(st, `hop ${key} ${coin.txid} ${coin.index} ${coin.amount} ${nonce}`);
++// kit16 (pre-run 4): `family` sets the hop rate (families 1-13 pay 100, 14-16 pay 200) on the hop line itself, so one
++// builder process carries both cohorts. The builder must echo that rate back; an old builder that ignores it is refused.
++export async function buildHop(B, st, coin, key, nonce, family) {
++  const rate = familyRate(family);
++  const r = await B.run(st, hopLine(key, coin, nonce, family));
++  if (Number(r.rate) !== rate) throw new Error("builder has no per-hop rate (want " + rate + ")");
+   const tx = materialize(r.tx); if (norm(tx.id) !== norm(r.txid)) throw new Error("hop id mismatch");
+-  return { tx, raw: r.tx, txid: norm(r.txid), nextSpk: r.nextSpk, compute: r.compute, fee: r.fee };   // 4 Nov a23: raw kept so a relay submits its own fresh wasm copy
++  return { tx, raw: r.tx, txid: norm(r.txid), nextSpk: r.nextSpk, compute: r.compute, transient: r.transient, fee: r.fee, rate };   // 4 Nov a23: raw kept so a relay submits its own fresh wasm copy
+ }
+ 
+ // Follower: given the current state, the next minter lands at a known address. Returns the next state or null.
+--- a/kit15/sender.mjs
++++ b/kit16/sender.mjs
+@@ -10,6 +10,9 @@
+ process.on("unhandledRejection", (e) => console.error("unhandled", String(e?.message || e)));
+ import { CFG, P, phase, iso, sleep, to, stepAt, END, STOPF, reason, connect, readState, writeState, arg } from "./lib.mjs";
+ import { startBuilder, buildHop, catchUp, Pool, keyAddress, probeBack, materialize } from "./covenant.mjs";
++import { feeTableMisses, FLOOR_RATE, DOUBLE_RATE } from "./family-fees.mjs";
++// kit16 (pre-run 4): the run config must carry 100 for families 1-13 and 200 for 14-16, or this sender does not start.
++{ const miss = feeTableMisses(CFG.families); if (miss.length || CFG.families.length !== 16) { console.error("fee table: families " + (miss.join(",") || "count")); process.exit(5); } }
+ const CATCHUP_MS = Number(CFG.catchup_ms || 2000);   // 30 Oct a5: catch-up cap
+ 
+ const LABEL = arg("label"), URL = arg("node"), SOURCE = arg("source", "coord");
+@@ -43,6 +46,7 @@
+   if (wait > 20) setTimeout(go, wait); else go();
+ }
+ const B = startBuilder(P("private", `builder-${LABEL}.err`));
++phase(`FEE_SPLIT sender=${LABEL} floor=1-13:${FLOOR_RATE} double=14-16:${DOUBLE_RATE} one-builder`);
+ await B.ask("ping", 120000);
+ const addr = keyAddress(KEY);
+ const pool = new Pool(rpc, addr); await pool.refresh();
+@@ -131,13 +135,13 @@
+ async function attempt1(fam) {
+   const st = await current(fam); if (!st || !st.covenantId) return;
+   const coin = pool.pick(fam, nFam); if (!coin) { if (Date.now() - pool.at > 1000) { pool.at = Date.now(); pool.refresh().catch(() => {}); } return; }  // 30 Oct a2: empty pool left 4 s gaps
+-  const tb = Date.now(); let h; try { h = await buildHop(B, st, coin, KEY, nonce++); } catch (e) { LOG.write(JSON.stringify({ ts: iso(), sender: LABEL, node: LABEL, family: fam, txid: "", result: "rejected", reason: "other", err: String(e.message || e).slice(0, 400) }) + "\n"); markStale(fam, "build"); return; }
++  const tb = Date.now(); let h; try { h = await buildHop(B, st, coin, KEY, nonce++, fam); } catch (e) { LOG.write(JSON.stringify({ ts: iso(), sender: LABEL, node: LABEL, family: fam, txid: "", result: "rejected", reason: "other", err: String(e.message || e).slice(0, 400) }) + "\n"); markStale(fam, "build"); return; }
+   const build_ms = Date.now() - tb;
+   if (h.compute > 100000) return;
+   const ts = iso(); let result = "ok", why = "", err = ""; const t0 = Date.now();
+   try { await to(rpc.submitTransaction({ transaction: h.tx, allowOrphan: false }), 8000, "submit"); }
+   catch (e) { result = "rejected"; why = reason(e); err = String(e?.message || e).replace(/\s+/g, " ").slice(0, 600); }
+-  const row = { ts, sender: LABEL, node: LABEL, family: fam, txid: h.txid, result, reason: why, source: SOURCE, rpc_ms: Date.now() - t0, build_ms, tip_seq: st.seq || 0, catchup_ms: fam$.get(fam)?.catchup_ms ?? 0, tip_age_ms: st.live_utc ? Date.now() - Date.parse(st.live_utc) : null, fire: FIRING.has(fam) ? 1 : 0, q: inflight, bq: B.depth ? B.depth() : 0 }; if (err) row.err = err;
++  const row = { ts, sender: LABEL, node: LABEL, family: fam, rate: h.rate, fee: h.fee, txid: h.txid, result, reason: why, source: SOURCE, rpc_ms: Date.now() - t0, build_ms, tip_seq: st.seq || 0, catchup_ms: fam$.get(fam)?.catchup_ms ?? 0, tip_age_ms: st.live_utc ? Date.now() - Date.parse(st.live_utc) : null, fire: FIRING.has(fam) ? 1 : 0, q: inflight, bq: B.depth ? B.depth() : 0 }; if (err) row.err = err;
+   LOG.write(JSON.stringify(row) + "\n");
+   if (result === "ok" && RELAYS.length) relay(h.raw, h.txid, fam);   // 4 Nov a23
+   if (++shapeTry <= 20 && (why === "mass" || why === "fee")) { if (++shapeRej >= 5 && !dropped) { dropped = true; phase(`NODE_DROP node=${LABEL} reason=redeem_shape`); } }

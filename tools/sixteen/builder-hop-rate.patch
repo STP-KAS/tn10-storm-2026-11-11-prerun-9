@@ -1,0 +1,74 @@
+--- a/src/bin/kcc20/storm.rs
++++ b/src/bin/kcc20/storm.rs
+@@ -5,7 +5,9 @@
+ //!   genesis <key> <fund_txid> <index> <amount> <launch_path>   -> tx, covenantId, owner, minterSpk
+ //!   follow <covenantId> <owner_hex> <minter_txid> <index> <remaining> <minter_spk_hex>
+ //!   nextspk                                                     -> script of the next minter (for hop detection)
+-//!   hop <key> <fund_txid> <index> <amount> <nonce>              -> tx (input 0 minter, input 1 fund; out 0 minter, 1 token, 2 change)
++//!   hop <key> <fund_txid> <index> <amount> <nonce> [rate]       -> tx (input 0 minter, input 1 fund; out 0 minter, 1 token, 2 change)
++//!     pre-run 4: the optional [rate] is this hop's sompi per gram (at least 100). With it the fee is exactly mass x rate,
++//!     so one builder process pays 100 for one family and 200 for another. Without it the hop is built as before.
+ //!   quit
+ use std::fs;
+ use std::io::{BufRead, Write};
+@@ -100,7 +102,7 @@
+             let c = chain.as_ref().ok_or("no chain")?;
+             // build a throwaway hop with a dummy funding entry; the next minter script does not depend on the sender
+             let dummy = "00".repeat(32);
+-            let built = build_hop(artifact, &keys[0], extension, c, &dummy, 0, 100_000_000_000, 0)?;
++            let built = build_hop(artifact, &keys[0], extension, c, &dummy, 0, 100_000_000_000, 0, None)?;
+             Ok(format!("{{\"ok\":true,\"cmd\":\"nextspk\",\"spk\":{}}}", json_str(&hex(built.tx.outputs[0].script_public_key.script()))))
+         }
+         "hop" => {
+@@ -110,10 +112,12 @@
+             let index: u32 = parts.next().ok_or("index")?.parse()?;
+             let amount: u64 = parts.next().ok_or("amount")?.parse()?;
+             let nonce: u64 = parts.next().ok_or("nonce")?.parse()?;
+-            let built = build_hop(artifact, key, extension, c, txid, index, amount, nonce)?;
++            let rate: Option<u64> = match parts.next() { Some(r) => Some(r.parse()?), None => None };
++            if let Some(r) = rate { if r < 100 { return Err("hop rate under 100".into()); } }
++            let built = build_hop(artifact, key, extension, c, txid, index, amount, nonce, rate)?;
+             Ok(format!(
+-                "{{\"ok\":true,\"cmd\":\"hop\",\"txid\":{},\"fee\":{},\"change\":{},\"compute\":{},\"transient\":{},\"nextSpk\":{},\"tx\":{}}}",
+-                json_str(&built.tx.id().to_string()), built.fee, built.tx.outputs[2].value, built.compute, built.transient,
++                "{{\"ok\":true,\"cmd\":\"hop\",\"rate\":{},\"txid\":{},\"fee\":{},\"change\":{},\"compute\":{},\"transient\":{},\"nextSpk\":{},\"tx\":{}}}",
++                rate.unwrap_or_else(fee_rate), json_str(&built.tx.id().to_string()), built.fee, built.tx.outputs[2].value, built.compute, built.transient,
+                 json_str(&hex(built.tx.outputs[0].script_public_key.script())), tx_json(&built.tx)))
+         }
+         "quit" => Ok("{\"ok\":true,\"cmd\":\"quit\"}".to_string()),
+@@ -148,9 +152,11 @@
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+-fn build_hop(artifact: &Artifact, key: &Keypair, extension: &[u8; 32], chain: &Chain, txid: &str, index: u32, amount: u64, nonce: u64) -> Result<Ready, Box<dyn std::error::Error>> {
++fn build_hop(artifact: &Artifact, key: &Keypair, extension: &[u8; 32], chain: &Chain, txid: &str, index: u32, amount: u64, nonce: u64, rate: Option<u64>) -> Result<Ready, Box<dyn std::error::Error>> {
+     let sender_pk = key.x_only_public_key().0.serialize();
+-    let mut fee = 5_000_000u64;
++    // pre-run 4: with a per-hop rate, start low so the fee settles at exactly mass x rate. The old 5,000,000 start
++    // is a floor that can hide the difference between 100 and 200. Without a rate the old start and env rate stay.
++    let mut fee = if rate.is_some() { 1u64 } else { 5_000_000u64 };
+     let mut last = String::from("hop");
+     for _ in 0..6 {
+         if amount <= TOKEN + fee { return Err(format!("hop funding {amount} fee {fee}").into()); }
+@@ -172,7 +178,7 @@
+                 .output(fund_spk, None, change),
+         )?;
+         let ready = commit(tx, "hop", &[minter_entry, fund_entry], fee)?;
+-        let need = required_fee(ready.compute, ready.transient);
++        let need = required_fee_at(ready.compute, ready.transient, rate.unwrap_or_else(fee_rate));
+         if fee >= need { return Ok(ready); }
+         fee = need; last = format!("need {need}");
+     }
+@@ -224,7 +230,11 @@
+ }
+ 
+ fn required_fee(compute: u64, transient: u64) -> u64 {
+-    compute.max(transient.div_ceil(2)).saturating_mul(fee_rate()).max(1)
++    required_fee_at(compute, transient, fee_rate())
++}
++
++fn required_fee_at(compute: u64, transient: u64, rate: u64) -> u64 {
++    compute.max(transient.div_ceil(2)).saturating_mul(rate).max(1)
+ }
+ 
+ fn minter_state(remaining: i64, mint_amount: i64, owner: &[u8; 32], extension: &[u8; 32]) -> super::TokenState {

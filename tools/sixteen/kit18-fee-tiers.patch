@@ -1,0 +1,63 @@
+--- a/kit17/sender.mjs	2026-11-11 22:13:48.153733058 +0100
++++ b/kit18/sender.mjs	2026-11-11 23:27:33.374871808 +0100
+@@ -11,9 +11,9 @@
+ process.on("unhandledRejection", (e) => console.error("unhandled", String(e?.message || e)));
+ import { CFG, P, phase, iso, sleep, to, stepAt, END, STOPF, reason, connect, readState, writeState, arg } from "./lib.mjs";
+ import { startBuilder, buildHop, catchUp, Pool, keyAddress, probeBack, materialize } from "./covenant.mjs";
+-import { feeTableMisses, FLOOR_RATE, DOUBLE_RATE } from "./family-fees.mjs";
++import { feeTableMisses, FEE_SPLIT_LINE } from "./family-fees.mjs";
+ import { mempoolSkip } from "./mempool-skip.mjs";   // kit17 (pre-run 7, lock line (i)): the skip clears, or does not apply
+-// kit16 (pre-run 2): the run config must carry 100 for families 1-13 and 200 for 14-16, or this sender does not start.
++// kit18 (pre-run 8): the run config must carry 100 for families 1-6, 200 for 7-11 and 300 for 12-16, or this sender does not start.
+ { const miss = feeTableMisses(CFG.families); if (miss.length || CFG.families.length !== 16) { console.error("fee table: families " + (miss.join(",") || "count")); process.exit(5); } }
+ const CATCHUP_MS = Number(CFG.catchup_ms || 2000);   // 30 Oct a5: catch-up cap
+ 
+@@ -48,7 +48,7 @@
+   if (wait > 20) setTimeout(go, wait); else go();
+ }
+ const B = startBuilder(P("private", `builder-${LABEL}.err`));
+-phase(`FEE_SPLIT sender=${LABEL} floor=1-13:${FLOOR_RATE} double=14-16:${DOUBLE_RATE} one-builder`);
++phase(`FEE_SPLIT sender=${LABEL} ${FEE_SPLIT_LINE} one-builder`);
+ await B.ask("ping", 120000);
+ const addr = keyAddress(KEY);
+ const pool = new Pool(rpc, addr); await pool.refresh();
+--- a/kit17/family-fees.mjs	2026-11-11 22:13:48.145732026 +0100
++++ b/kit18/family-fees.mjs	2026-11-11 23:27:33.358869744 +0100
+@@ -1,19 +1,30 @@
+-// family-fees.mjs: pre-run 2's hop fee per family. Families 1-13 (floor) pay 100 sompi per gram. Families 14-16
+-// (double) pay 200. Payments pay 150. Genesis (built once by hash-sixteen.mjs) stays at 200. Locked: not loosened here.
++// family-fees.mjs: pre-run 8's hop fee per family, three tiers around the payments' 150 sompi per gram.
++// Floor, families 1-6, pay 100 (under the payments). Double, families 7-11, pay 200 (over). Triple, families 12-16,
++// pay 300 (twice the payments). Payments pay 150. Genesis (built once by hash-sixteen.mjs) stays at 200.
++// Pre-run 7 ran 1-13 at 100 and 14-16 at 200; pre-run 8 steps the fee so the landing per tier answers the congestion question.
+ export const FLOOR_RATE = 100;
+ export const DOUBLE_RATE = 200;
++export const TRIPLE_RATE = 300;
+ export const PAY_RATE = 150;
+ export const GENESIS_RATE = 200;
++export const TIERS = [
++  { cohort: "floor", rate: FLOOR_RATE, from: 1, to: 6 },
++  { cohort: "double", rate: DOUBLE_RATE, from: 7, to: 11 },
++  { cohort: "triple", rate: TRIPLE_RATE, from: 12, to: 16 },
++];
++export const COHORTS = TIERS.map((t) => t.cohort);
+ export function familyRate(family) {
+   const f = Number(family);
+-  if (Number.isInteger(f) && f >= 1 && f <= 13) return FLOOR_RATE;
+-  if (Number.isInteger(f) && f >= 14 && f <= 16) return DOUBLE_RATE;
+-  throw new Error("family " + family + " is not 1..16");
++  const t = Number.isInteger(f) ? TIERS.find((x) => f >= x.from && f <= x.to) : null;
++  if (!t) throw new Error("family " + family + " is not 1..16");
++  return t.rate;
+ }
+-export const cohortOfFamily = (family) => (familyRate(family) === FLOOR_RATE ? "floor" : "double");
++export const cohortOfFamily = (family) => TIERS.find((t) => t.rate === familyRate(family)).cohort;
++export const cohortOfRate = (rate) => (TIERS.find((t) => t.rate === Number(rate)) || {}).cohort || null;
++export const FEE_SPLIT_LINE = TIERS.map((t) => `${t.cohort}=${t.from}-${t.to}:${t.rate}`).join(" ");
+ // The family list in a run config must say the same rates. Returns [] when it does, else the families that differ.
+ export function feeTableMisses(families) {
+   return (families || []).filter((f) => Number(f.fee_sompi_per_gram) !== familyRate(f.family)).map((f) => Number(f.family));
+ }
+-// The one hop line for the builder: the rate rides on each hop, so one builder process carries both cohorts.
++// The one hop line for the builder: the rate rides on each hop, so one builder process carries every tier.
+ export const hopLine = (key, coin, nonce, family) => `hop ${key} ${coin.txid} ${coin.index} ${coin.amount} ${nonce} ${familyRate(family)}`;

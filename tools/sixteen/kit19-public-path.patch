@@ -1,0 +1,56 @@
+--- a/sender.mjs	2026-11-12 01:41:48.123035535 +0100
++++ b/sender.mjs	2026-11-12 01:41:48.127036051 +0100
+@@ -1 +1,6 @@
++// kit19 (pre-run 9): kit18 plus one change. Families on a public path (family-fees.mjs PUBLIC_FAMILIES, 11-13) read their
++// tip, catch up, probe back, and submit on a kept public kaspad (CFG.family_public_urls, family -> url, written by the
++// desk runner from its preflight), the same nodes the payment senders use. Every other family stays on --node (the
++// desk's private node). Still one process and one builder; the rate rides on each hop line. Each submit row carries
++// path=desk or path=public-<local node number>. The funding pool is read from --node, as before.
+ // kit17 (pre-run 7): kit16 + mempool-skip.mjs (lock line (i)). Nothing else changed.
+@@ -13,5 +18,5 @@
+ import { startBuilder, buildHop, catchUp, Pool, keyAddress, probeBack, materialize } from "./covenant.mjs";
+-import { feeTableMisses, FEE_SPLIT_LINE } from "./family-fees.mjs";
++import { feeTableMisses, FEE_SPLIT_LINE, PUBLIC_FAMILIES } from "./family-fees.mjs";
+ import { mempoolSkip } from "./mempool-skip.mjs";   // kit17 (pre-run 7, lock line (i)): the skip clears, or does not apply
+-// kit18 (pre-run 8): the run config must carry 100 for families 1-6, 200 for 7-11 and 300 for 12-16, or this sender does not start.
++// kit19 (pre-run 9): the run config must carry family-fees.mjs's rates for all sixteen families, or this sender does not start.
+ { const miss = feeTableMisses(CFG.families); if (miss.length || CFG.families.length !== 16) { console.error("fee table: families " + (miss.join(",") || "count")); process.exit(5); } }
+@@ -25,2 +30,12 @@
+ const rpc = await connect(URL);
++// kit19: the public path. Each public family names a kept public kaspad; one connection per distinct url.
++const PUBMAP = CFG.family_public_urls || {};
++const pubConn = new Map(), famRpc = new Map(), famPath = new Map();
++for (const fam of PUBLIC_FAMILIES) {
++  const e = PUBMAP[String(fam)]; if (!e || !e.url) { console.error("public path: family " + fam + " has no node"); process.exit(5); }
++  if (!pubConn.has(e.url)) pubConn.set(e.url, await connect(e.url, 3));
++  famRpc.set(fam, pubConn.get(e.url)); famPath.set(fam, "public-" + e.n);
++}
++const rpcFor = (fam) => famRpc.get(fam) || rpc;
++const pathFor = (fam) => famPath.get(fam) || "desk";
+ // 4 Nov a23 multi-entry relay: a22 capture showed desk submit -> mini mempool first-seen p50 ~0.8 s but mini first-seen -> accepting
+@@ -51,2 +66,3 @@
+ phase(`FEE_SPLIT sender=${LABEL} ${FEE_SPLIT_LINE} one-builder`);
++phase(`FAMILY_PATH sender=${LABEL} ${CFG.families.map((f) => f.family + ":" + pathFor(f.family)).join(",")}`);
+ await B.ask("ping", 120000);
+@@ -98,3 +114,3 @@
+   const cands = (f.hist || []).filter((h) => (h.seq || 0) < (from.seq || 0) && (h.seq || 0) >= (from.seq || 0) - HIST);
+-  const hit = await probeBack(rpc, cands);
++  const hit = await probeBack(rpcFor(fam), cands);
+   if (!hit) { CLOG.write(JSON.stringify({ ts: iso(), sender: LABEL, family: fam, result: "tip_back", reason: "none_live", from_seq: from.seq, cands: cands.length }) + "\n"); return null; }
+@@ -111,3 +127,3 @@
+   const t0 = Date.now(); catchups++;
+-  f.inflight = to(catchUp(rpc, B, from, 100000, t0 + CATCHUP_MS), CATCHUP_MS + 500, "catchup")
++  f.inflight = to(catchUp(rpcFor(fam), B, from, 100000, t0 + CATCHUP_MS), CATCHUP_MS + 500, "catchup")
+     .then((st) => { st.live_utc = iso(); f.st = st; f.stale = false; f.fails = 0; f.suspect = null; remember(f, st); f.catchup_ms = Date.now() - t0; if ((st.seq || 0) > ((from.seq || 0))) writeState(fam, { ...st, source: "self" }); })
+@@ -144,5 +160,5 @@
+   const ts = iso(); let result = "ok", why = "", err = ""; const t0 = Date.now();
+-  try { await to(rpc.submitTransaction({ transaction: h.tx, allowOrphan: false }), 8000, "submit"); }
++  try { await to(rpcFor(fam).submitTransaction({ transaction: h.tx, allowOrphan: false }), 8000, "submit"); }
+   catch (e) { result = "rejected"; why = reason(e); err = String(e?.message || e).replace(/\s+/g, " ").slice(0, 600); }
+-  const row = { ts, sender: LABEL, node: LABEL, family: fam, rate: h.rate, fee: h.fee, txid: h.txid, result, reason: why, source: SOURCE, rpc_ms: Date.now() - t0, build_ms, tip_seq: st.seq || 0, catchup_ms: fam$.get(fam)?.catchup_ms ?? 0, tip_age_ms: st.live_utc ? Date.now() - Date.parse(st.live_utc) : null, fire: FIRING.has(fam) ? 1 : 0, q: inflight, bq: B.depth ? B.depth() : 0 }; if (err) row.err = err;
++  const row = { ts, sender: LABEL, node: LABEL, path: pathFor(fam), family: fam, rate: h.rate, fee: h.fee, txid: h.txid, result, reason: why, source: SOURCE, rpc_ms: Date.now() - t0, build_ms, tip_seq: st.seq || 0, catchup_ms: fam$.get(fam)?.catchup_ms ?? 0, tip_age_ms: st.live_utc ? Date.now() - Date.parse(st.live_utc) : null, fire: FIRING.has(fam) ? 1 : 0, q: inflight, bq: B.depth ? B.depth() : 0 }; if (err) row.err = err;
+   LOG.write(JSON.stringify(row) + "\n");
+@@ -235,2 +251,2 @@
+ if (PHASE > 0) phase(`PHASE sender=${LABEL} phase_ms=${PHASE} only=${PHASE_ONLY || 0} waits=${phaseWaits} mean_ms=${phaseWaits ? Math.round(phaseWaitMs / phaseWaits) : 0}`);
+-await sleep(3000); LOG.end(); try { await B.ask("quit", 3000); } catch {} await rpc.disconnect().catch(() => {}); process.exit(0);
++await sleep(3000); LOG.end(); try { await B.ask("quit", 3000); } catch {} await rpc.disconnect().catch(() => {}); for (const c of pubConn.values()) await c.disconnect().catch(() => {}); process.exit(0);

@@ -1,0 +1,10 @@
+0a1
+> // kit17 (pre-run 7): kit16 + mempool-skip.mjs (lock line (i)). Nothing else changed.
+13a15
+> import { mempoolSkip } from "./mempool-skip.mjs";   // kit17 (pre-run 7, lock line (i)): the skip clears, or does not apply
+53a56
+> const MSKIP = mempoolSkip(LABEL, Number(CFG.family_mempool_skip_line ?? 90000), phase);
+63c66
+<     if (!skipped && Number(info.mempoolSize) >= 90000) { skipped = true; phase(`NODE_SKIP node=${LABEL} reason=mempool_90k`); }
+---
+>     skipped = MSKIP.read(info.mempoolSize);   // kit17: two-way; line 0 = never skips
